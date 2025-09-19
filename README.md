@@ -1,2 +1,2 @@
-# lyricmind
-InfoQ project for RAG Application
+# LyricMind
+Repository for InfoQ article on Lyricmind

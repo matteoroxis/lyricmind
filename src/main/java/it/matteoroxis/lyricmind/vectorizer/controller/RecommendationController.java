@@ -21,9 +21,7 @@ public class RecommendationController {
 
     @Autowired
     RecommendationService recommendationService;
-
     Logger logger = LoggerFactory.getLogger(RecommendationController.class);
-
 
     @PostMapping
     public ResponseEntity<List<SongRecommendationResponse>> recommendSongs(
@@ -33,8 +31,6 @@ public class RecommendationController {
                 request.mood(),
                 request.limit() != null ? request.limit() : 10
         );
-
         return ResponseEntity.ok(recommendations);
     }
-
 }

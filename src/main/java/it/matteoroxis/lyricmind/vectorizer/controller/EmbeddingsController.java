@@ -18,13 +18,6 @@ public class EmbeddingsController {
     @Autowired
     SongEmbeddingService songEmbeddingService;
 
-    @Autowired
-    DatasetGeneratorComponent datasetGeneratorComponent;
-
-    @PostMapping("/songs")
-    ResponseEntity<Song> createEmbeddingFromSong(@RequestBody SongRequest request){
-        return new ResponseEntity<>(songEmbeddingService.createEmbeddingFromSong(request), HttpStatus.CREATED);
-    }
 
     @PostMapping("/bulk-songs")
     ResponseEntity<BulkSongResponse> createEmbeddingFromBulkSong(@RequestBody BulkSongRequest request){

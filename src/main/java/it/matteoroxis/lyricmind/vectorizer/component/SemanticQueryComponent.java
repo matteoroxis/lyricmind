@@ -25,7 +25,6 @@ public class SemanticQueryComponent {
 
         logger.info("Building semantic query: "+query);
 
-        // Ricerca semantica nel vector store
         SearchRequest searchRequest = SearchRequest.builder()
                 .query(query)
                 .topK(limit*2)

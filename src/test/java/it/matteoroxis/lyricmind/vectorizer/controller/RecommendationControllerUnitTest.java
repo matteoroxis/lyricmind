@@ -64,8 +64,8 @@ class RecommendationControllerUnitTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
-                .andExpected(jsonPath("$").isArray())
-                .andExpected(jsonPath("$").isEmpty());
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$").isEmpty());
     }
 
     @Test

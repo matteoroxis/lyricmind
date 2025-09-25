@@ -7,7 +7,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class ModelEntityTest {
+class ModelEntityUnitTest {
 
     @Test
     void song_AllFields_SetAndGetCorrectly() {
@@ -90,9 +90,9 @@ class ModelEntityTest {
     @Test
     void songRecommendation_SettersAndGetters_WorkCorrectly() {
         // Given
-        SongRecommendation recommendation = new SongRecommendation(null, Map.of(), null);
+        Map<String, Object> metadata = Map.of("motivation", "data");
+        SongRecommendation recommendation = new SongRecommendation(null, metadata, null);
         Song song = new Song();
-        Map<String, Object> metadata = Map.of("test", "data");
         Double score = 0.8;
         String reason = "Custom reason";
 

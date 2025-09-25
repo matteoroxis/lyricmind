@@ -1,168 +1,215 @@
 package it.matteoroxis.lyricmind.vectorizer.component;
 
-import com.fasterxml.jackson.core.JsonParseException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.openai.OpenAiChatModel;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.LENIENT)
 class RerankComponentUnitTest {
 
-    @Mock
-    private OpenAiChatModel chatModel;
+    @org.mockito.Mock
+    OpenAiChatModel chatModel;
 
-    @Mock
-    private ObjectMapper objectMapper;
+    // Use a real ObjectMapper for JSON parsing
+    ObjectMapper objectMapper = new ObjectMapper();
 
-    @InjectMocks
-    private RerankComponent rerankComponent;
+    RerankComponent component;
 
-    private List<Document> testDocuments;
-    private ChatResponse mockResponse;
+    @Captor
+    ArgumentCaptor<Prompt> promptCaptor;
 
     @BeforeEach
     void setUp() {
-        Map<String, Object> metadata1 = new HashMap<>();
-        metadata1.put("artist", "Beatles");
-        metadata1.put("title", "Hey Jude");
-        metadata1.put("genre", "Rock");
+        component = new RerankComponent(chatModel, objectMapper);
+    }
 
-        Map<String, Object> metadata2 = new HashMap<>();
-        metadata2.put("artist", "Queen");
-        metadata2.put("title", "Bohemian Rhapsody");
-        metadata2.put("genre", "Rock");
+    // Helper: create a Document with minimal metadata
+    private Document doc(String artist, String title, String genre) {
+        Map<String, Object> md = new HashMap<>();
+        md.put("artist", artist);
+        md.put("title", title);
+        if (genre != null) md.put("genre", genre);
+        return new Document("lyrics...", md);
+    }
 
-        testDocuments = List.of(
-                new Document("Content 1", metadata1),
-                new Document("Content 2", metadata2)
-        );
-
-        mockResponse = mock(ChatResponse.class);
-        // Setup di base per il mock - solo quello che serve per tutti i test
-        lenient().when(mockResponse.getResult()).thenReturn(mock(org.springframework.ai.chat.model.Generation.class));
-        lenient().when(mockResponse.getResult().getOutput()).thenReturn(mock(org.springframework.ai.chat.messages.AssistantMessage.class));
+    // Helper: mock the AI model to return the given raw text
+    private void mockAiReturns(String rawText) {
+        ChatResponse response = mock(ChatResponse.class);
+        Generation generation = mock(Generation.class);
+        Message message = new AssistantMessage(rawText);
+        when(response.getResult()).thenReturn(generation);
+        when(generation.getOutput()).thenReturn((AssistantMessage) message);
+        when(chatModel.call(any(Prompt.class))).thenReturn(response);
     }
 
     @Test
-    void rerank_ValidInput_ReturnsRankedDocuments() throws Exception {
+    void rerank_happyPath_ordersAndAddsMotivations() {
         // Given
-        String mood = "happy";
-        String jsonResponse = """
-            [
-                {"doc_index": 1, "score": 0.9, "motivation": "Uplifting melody"},
-                {"doc_index": 2, "score": 0.8, "motivation": "Epic and inspiring"}
-            ]
-            """;
-
-        when(mockResponse.getResult().getOutput().getText()).thenReturn(jsonResponse);
-        when(chatModel.call(any(Prompt.class))).thenReturn(mockResponse);
-
-        List<Map<String, Object>> ranking = List.of(
-                Map.of("doc_index", 1, "score", 0.9, "motivation", "Uplifting melody"),
-                Map.of("doc_index", 2, "score", 0.8, "motivation", "Epic and inspiring")
+        List<Document> docs = List.of(
+                doc("Artist A", "Title A", "Pop"),
+                doc("Artist B", "Title B", "Rock")
         );
-        when(objectMapper.readValue(eq(jsonResponse), any(TypeReference.class))).thenReturn(ranking);
+
+        // Model ranks doc #2 first, then doc #1 (indices are 1-based in the response)
+        String json = "[{\"doc_index\":2,\"score\":0.91,\"motivation\":\"Highly consistent with the mood\"}," +
+                " {\"doc_index\":1,\"score\":0.35,\"motivation\":\"Partially consistent\"}]";
+        mockAiReturns(json);
 
         // When
-        List<Document> result = rerankComponent.rerank(mood, testDocuments);
+        List<Document> ranked = component.rerank("energetic", docs);
 
         // Then
-        assertNotNull(result);
-        assertEquals(2, result.size());
-        assertEquals("Uplifting melody", result.get(0).getMetadata().get("motivation"));
-        assertEquals("Epic and inspiring", result.get(1).getMetadata().get("motivation"));
+        assertEquals(2, ranked.size());
+        assertEquals("Title B", ranked.get(0).getMetadata().get("title")); // doc #2 first
+        assertEquals("Title A", ranked.get(1).getMetadata().get("title")); // then doc #1
 
-        verify(chatModel).call(any(Prompt.class));
-        verify(objectMapper).readValue(eq(jsonResponse), any(TypeReference.class));
+        // Motivation should be injected into metadata
+        assertEquals("Highly consistent with the mood", ranked.get(0).getMetadata().get("motivation"));
+        assertEquals("Partially consistent", ranked.get(1).getMetadata().get("motivation"));
+
+        verify(chatModel, times(1)).call(any(Prompt.class));
     }
 
     @Test
-    void rerank_EmptyDocuments_ThrowsException() {
+    void rerank_cleansMarkdownCodeFence() {
         // Given
-        String mood = "happy";
-        List<Document> emptyDocs = List.of();
+        List<Document> docs = List.of(
+                doc("Artist A", "Title A", null),
+                doc("Artist B", "Title B", null)
+        );
 
-        // When & Then
-        RuntimeException exception = assertThrows(RuntimeException.class,
-                () -> rerankComponent.rerank(mood, emptyDocs));
-
-        assertEquals("Document re-ranking failed", exception.getMessage());
-    }
-
-    @Test
-    void rerank_AIModelFailure_ThrowsException() {
-        // Given
-        String mood = "happy";
-        when(chatModel.call(any(Prompt.class))).thenThrow(new RuntimeException("AI Error"));
-
-        // When & Then
-        RuntimeException exception = assertThrows(RuntimeException.class,
-                () -> rerankComponent.rerank(mood, testDocuments));
-
-        assertEquals("Document re-ranking failed", exception.getMessage());
-    }
-
-    @Test
-    void rerank_InvalidJsonResponse_ThrowsException() throws Exception {
-        // Given
-        String mood = "happy";
-        String invalidJson = "invalid json";
-
-        when(mockResponse.getResult().getOutput().getText()).thenReturn(invalidJson);
-        when(chatModel.call(any(Prompt.class))).thenReturn(mockResponse);
-        when(objectMapper.readValue(eq(invalidJson), any(TypeReference.class)))
-                .thenThrow(new com.fasterxml.jackson.core.JsonParseException(null, "Invalid JSON"));
-
-        // When & Then
-        RuntimeException exception = assertThrows(RuntimeException.class,
-                () -> rerankComponent.rerank(mood, testDocuments));
-
-        assertEquals("Document re-ranking failed", exception.getMessage());
-    }
-
-    @Test
-    void rerank_LimitedDocuments_ProcessesCorrectly() throws Exception {
-        // Given
-        String mood = "energetic";
-        // Create more than 50 documents to test limiting
-        List<Document> manyDocuments = new java.util.ArrayList<>();
-        for (int i = 0; i < 60; i++) {
-            Map<String, Object> metadata = new HashMap<>();
-            metadata.put("artist", "Artist" + i);
-            metadata.put("title", "Title" + i);
-            manyDocuments.add(new Document("Content" + i, metadata));
-        }
-
-        String jsonResponse = "[]";
-        when(mockResponse.getResult().getOutput().getText()).thenReturn(jsonResponse);
-        when(chatModel.call(any(Prompt.class))).thenReturn(mockResponse);
-        when(objectMapper.readValue(eq(jsonResponse), any(TypeReference.class))).thenReturn(List.of());
+        String fenced =
+                "```json\n" +
+                        "[{\"doc_index\":2,\"score\":0.9,\"motivation\":\"OK\"}," +
+                        " {\"doc_index\":1,\"score\":0.4,\"motivation\":\"OK\"}]\n" +
+                        "```";
+        mockAiReturns(fenced);
 
         // When
-        List<Document> result = rerankComponent.rerank(mood, manyDocuments);
+        List<Document> ranked = component.rerank("calm", docs);
+
+        // Then
+        assertEquals(2, ranked.size());
+        assertEquals("Title B", ranked.get(0).getMetadata().get("title"));
+        assertEquals("OK", ranked.get(0).getMetadata().get("motivation"));
+    }
+
+    @Test
+    void rerank_limitsTo50Documents_and_sanitizesMoodInPrompt() {
+        // Given: 60 docs (only the first 50 should be included in the prompt)
+        List<Document> docs = IntStream.rangeClosed(1, 60)
+                .mapToObj(i -> doc("Artist " + i, "Title " + i, (i % 2 == 0 ? "Pop" : "Rock")))
+                .collect(Collectors.toList());
+
+        // Ranking references only docs within the first 50
+        String json = "[{\"doc_index\":50,\"score\":0.99,\"motivation\":\"Top\"}," +
+                " {\"doc_index\":1,\"score\":0.5,\"motivation\":\"Base\"}]";
+        mockAiReturns(json);
+
+        // Mood contains characters that sanitizeInput removes:  \" '  `
+        String rawMood = "mo\"o'd `X";
+
+        // When
+        component.rerank(rawMood, docs);
+
+        // Then: capture the Prompt to inspect its content
+        verify(chatModel).call(promptCaptor.capture());
+        Prompt usedPrompt = promptCaptor.getValue();
+
+        // The Prompt is built with a single UserMessage
+        Message msg = usedPrompt.getInstructions().get(0);
+        assertTrue(msg instanceof UserMessage);
+        String promptText = msg.getText();
+
+        // Only docs 1..50 must be present
+        assertTrue(promptText.contains("Doc 50:"), "Prompt must contain 'Doc 50:'");
+        assertFalse(promptText.contains("Doc 51:"), "Prompt must NOT contain 'Doc 51:'");
+        assertFalse(promptText.contains("Doc 60:"), "Prompt must NOT contain 'Doc 60:'");
+
+        // Mood should be sanitized: "mo\"o'd `X" -> "mood X"
+        assertTrue(promptText.contains("Requested Mood: mood X"),
+                "Sanitized mood should appear in the prompt");
+    }
+
+    @Test
+    void rerank_invalidModelResponse_throws() {
+        // Given: model returns ChatResponse with null result
+        ChatResponse bad = mock(ChatResponse.class);
+        when(bad.getResult()).thenReturn(null);
+        when(chatModel.call(any(Prompt.class))).thenReturn(bad);
+
+        List<Document> docs = List.of(doc("A", "T", null));
+
+        // When + Then
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> component.rerank("any", docs));
+        assertTrue(ex.getMessage().contains("Document re-ranking failed"));
+    }
+
+    @Test
+    void rerank_rankingItemMissingRequiredFields_throws() {
+        // Given: item without motivation or without doc_index
+        String invalidJson = "[{\"doc_index\":1},{\"motivation\":\"missing index\"}]";
+        mockAiReturns(invalidJson);
+
+        List<Document> docs = List.of(doc("A", "T", null));
+
+        // When + Then (internal validation should fail)
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> component.rerank("any", docs));
+        assertTrue(ex.getMessage().contains("Document re-ranking failed"));
+    }
+
+    @Test
+    void rerank_outOfRangeIndex_isSkipped() {
+        // Given: ranking with an index far beyond the list size
+        String json = "[{\"doc_index\":999,\"score\":0.1,\"motivation\":\"out\"}]";
+        mockAiReturns(json);
+
+        List<Document> docs = List.of(
+                doc("A", "T1", null),
+                doc("B", "T2", null)
+        );
+
+        // When
+        List<Document> ranked = component.rerank("any", docs);
+
+        // Then: no valid documents processed
+        assertTrue(ranked.isEmpty());
+    }
+
+    @Test
+    void rerank_nonNumericDocIndex_itemSkipped() {
+        // Given: doc_index is a string -> extractDocumentIndex throws, item is skipped
+        String json = "[{\"doc_index\":\"one\",\"motivation\":\"test\"}]";
+        mockAiReturns(json);
+
+        List<Document> docs = List.of(doc("A", "T", null));
+
+        // When
+        List<Document> ranked = component.rerank("any", docs);
+
+        // Then
+        assertTrue(ranked.isEmpty());
     }
 }
